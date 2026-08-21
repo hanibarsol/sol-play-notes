@@ -281,10 +281,33 @@
   .tool:disabled { opacity: .45; cursor: default; }
   .tool:focus-visible { outline: 3px solid var(--ink-soft); outline-offset: 3px; }
 
+  /* the wand just changed a note - the play button says "come hear it" */
+  .tool.calling {
+    border-color: var(--wand);
+    animation: calling 1.9s ease-in-out infinite;
+  }
+  @keyframes calling {
+    0%, 100% { box-shadow: 0 0 0 .12rem rgba(255,211,110,.28), 0 0 .8rem rgba(255,211,110,.30); }
+    50%      { box-shadow: 0 0 0 .26rem rgba(255,211,110,.50), 0 0 1.7rem rgba(255,211,110,.68); }
+  }
+  /* while the call is out, the other two step back so the eye has one place to go */
+  .tool.hushed { opacity: .5; }
+  /* a small hop, twice, for a child who has not noticed the gold yet */
+  .tool.calling.nudge { animation: calling 1.9s ease-in-out infinite, hop .55s ease; }
+  @keyframes hop {
+    0%, 100% { transform: none; }
+    35%      { transform: translateY(-5px) scale(1.05); }
+    70%      { transform: translateY(0) scale(1); }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .ring.go { animation-duration: .01ms; }
     .pad .body { animation: none; }
     .pad .body, .tool, body { transition: none; }
+    .tool.calling, .tool.calling.nudge {
+      animation: none; transform: none;
+      box-shadow: 0 0 0 .2rem rgba(255,211,110,.45);
+    }
   }
 
   /* ---------- Sol home button (unified turquoise) ---------- */
@@ -425,6 +448,7 @@ function hit(note, btn) {
   });
   melody.push(note);
   draw();
+  startWandCycle();
 }
 
 function el(tag, attrs) {
@@ -523,6 +547,7 @@ function draw() {
 
   document.getElementById('empty').style.display = melody.length ? 'none' : 'block';
   ['play', 'undo', 'clear'].forEach(id => document.getElementById(id).disabled = !melody.length);
+  if (!melody.length) callAnswered();
 }
 
 const BEAT = 0.42;          // seconds between notes, matching the audio schedule
@@ -534,7 +559,70 @@ function stopHighlights() {
   document.querySelectorAll('.pad.lit, .note.lit').forEach(e => e.classList.remove('lit'));
 }
 
+// A short, quiet twinkle aimed at the button - not the wand's own arrival chime,
+// which is longer and announces the wand instead of the change it made.
+function callChime() {
+  const ac = audio();
+  const t0 = ac.currentTime + 0.02;
+  [784.0, 1046.5, 1318.5].forEach((f, i) => {
+    const at = t0 + i * 0.07;
+    const g = ac.createGain();
+    g.connect(ac.destination);
+    g.gain.setValueAtTime(0.0001, at);
+    g.gain.exponentialRampToValueAtTime(0.06, at + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, at + 0.42);
+    const osc = ac.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(f, at);
+    osc.connect(g);
+    osc.start(at); osc.stop(at + 0.45);
+  });
+}
+
+// The call stays lit until the child presses it. A four-year-old who hesitates
+// should not lose the hint while deciding - so nothing here is a deadline; the
+// reminders only repeat twice and then leave the gold standing on its own.
+const NUDGE_AFTER = 6000;
+const NUDGE_TIMES = 2;
+let nudgeTimer = null;
+let nudgesLeft = 0;
+
+function callPlay() {
+  const btn = document.getElementById('play');
+  if (btn.disabled) return;
+  btn.classList.add('calling');
+  document.getElementById('undo').classList.add('hushed');
+  document.getElementById('clear').classList.add('hushed');
+  callChime();
+  nudgesLeft = NUDGE_TIMES;
+  scheduleNudge();
+}
+
+function scheduleNudge() {
+  clearTimeout(nudgeTimer);
+  if (nudgesLeft <= 0) return;
+  nudgeTimer = setTimeout(() => {
+    const btn = document.getElementById('play');
+    if (!btn.classList.contains('calling')) return;
+    nudgesLeft--;
+    callChime();
+    btn.classList.remove('nudge');
+    void btn.offsetWidth;            // restart the hop on a repeat reminder
+    btn.classList.add('nudge');
+    scheduleNudge();
+  }, NUDGE_AFTER);
+}
+
+function callAnswered() {
+  clearTimeout(nudgeTimer);
+  nudgesLeft = 0;
+  document.getElementById('play').classList.remove('calling', 'nudge');
+  document.getElementById('undo').classList.remove('hushed');
+  document.getElementById('clear').classList.remove('hushed');
+}
+
 document.getElementById('play').addEventListener('click', () => {
+  callAnswered();
   stopHighlights();
   // start the eye where the melody starts, not where the child last scrolled
   const first = document.querySelector('.note[data-i="0"]');
@@ -570,9 +658,10 @@ lookBtn.addEventListener("click", () => {
 });
 
 /* ---------- the magic wand ---------- */
-const WAND_EVERY = 30000;   // it drops by this often
+const WAND_EVERY = 20000;   // it drops by this often
 const WAND_STAYS = 8000;    // and waits this long to be taken
-const WAND_FIRST = 12000;   // the first visit comes sooner, so nobody waits around
+const WAND_MIN_NOTES = 3;        // a whole note only teaches something inside a real little tune
+const WAND_AFTER_TUNE = 5000;    // counted from the note that completes that tune
 const CHIME_LEAD = 1300;    // the chime finishes before the voice begins
 const wandEl = document.getElementById("wand");
 const wandVoice = document.getElementById("wandVoice");
@@ -607,7 +696,7 @@ function wandChime() {
 }
 
 function wandArrive() {
-  if (wandEl.classList.contains("here") || !melody.length) return;
+  if (wandEl.classList.contains("here") || melody.length < WAND_MIN_NOTES) return;
   wandEl.classList.add("here");
   wandChime();
 
@@ -656,12 +745,23 @@ document.getElementById("staff").addEventListener("pointerdown", e => {
   melody[i].whole = true;
   wandLeave();
   draw();
+  callPlay();
 });
 
-setTimeout(() => {
-  wandArrive();
-  setInterval(wandArrive, WAND_EVERY);
-}, WAND_FIRST);
+// Counting from page load meant the wand checked an empty staff, gave up, and
+// came back only a full interval later - a child who took six seconds to pick a
+// first friend waited half a minute. The clock now starts when the child has a
+// tune worth changing: one note held long says nothing, but one long note among
+// three short ones is the whole lesson, heard in a single press.
+let wandCycleStarted = false;
+function startWandCycle() {
+  if (wandCycleStarted || melody.length < WAND_MIN_NOTES) return;
+  wandCycleStarted = true;
+  setTimeout(() => {
+    wandArrive();
+    setInterval(wandArrive, WAND_EVERY);
+  }, WAND_AFTER_TUNE);
+}
 
 // a turned phone or a resized window changes how much staff fits
 let resizeTimer = null;
